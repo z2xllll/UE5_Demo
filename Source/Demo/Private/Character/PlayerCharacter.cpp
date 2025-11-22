@@ -30,5 +30,5 @@ APlayerCharacter::APlayerCharacter()
 	UCharacterMovementComponent* MoveComp = GetCharacterMovement();
 	MoveComp->bOrientRotationToMovement = true;      // 朝移动方向转身
 	MoveComp->RotationRate = FRotator(0.f, 540.f, 0.f); // 转身速度
-	MoveComp->MaxWalkSpeed = 600.f;
+	MoveComp->MaxWalkSpeed = 500.f;
 }
