@@ -92,9 +92,35 @@ void AMyPlayerController::OnMove(const FInputActionValue& Value)
 void AMyPlayerController::OnLook(const FInputActionValue& Value)
 {
 	const FVector2D Axis = Value.Get<FVector2D>();
-	// 鼠标/摇杆控制视角：X 控制 Yaw，Y 控制 Pitch
+
+	// 先根据输入更新控制器旋转
 	AddYawInput(Axis.X);
 	AddPitchInput(Axis.Y);
+
+	// 如果当前控制的 Pawn 是玩家角色，则限制视角相对角色前方的偏转范围
+	if (CachedPlayerCharacter)
+	{
+		// 控制器当前旋转
+		const FRotator ControlRot = GetControlRotation();
+		// 角色当前朝向
+		const FRotator ActorRot   = CachedPlayerCharacter->GetActorRotation();
+
+		// 计算控制器相对于角色的旋转差值，并归一化到 [-180, 180]
+		FRotator DeltaRot = (ControlRot - ActorRot).GetNormalized();
+
+		// === 核心限制逻辑 ===
+		// 水平偏转：限制在角色正前方左右各 90 度范围内，防止视角完全转到背后
+		DeltaRot.Yaw = FMath::ClampAngle(DeltaRot.Yaw, -90.0f, 90.0f);
+
+		// 如有需要，也可以对俯仰角做限制，例如抬头/低头各 80 度：
+		// DeltaRot.Pitch = FMath::ClampAngle(DeltaRot.Pitch, -80.0f, 80.0f);
+
+		// 重新组合得到被限制后的控制器旋转：角色朝向 + 受限偏差
+		FRotator ClampedControlRot = ActorRot + DeltaRot;
+		ClampedControlRot.Normalize();
+
+		SetControlRotation(ClampedControlRot);
+	}
 }
 
 void AMyPlayerController::OnJumpStarted()

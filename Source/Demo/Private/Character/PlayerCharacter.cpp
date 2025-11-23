@@ -22,8 +22,6 @@ APlayerCharacter::APlayerCharacter()
 	FollowCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("FollowCamera"));
 	FollowCamera->SetupAttachment(CameraBoom, USpringArmComponent::SocketName);
 	FollowCamera->bUsePawnControlRotation = false; // 摄像机自己不跟随臂的控制器旋转 (由臂处理)
-	FollowCamera->SetRelativeLocation(FVector::ZeroVector); // 第三人称默认相对位置为 0，偏移由 SpringArm 控制
-	// 相机组件本身通常不参与物理阻挡，关闭 SpringArm 的 bDoCollisionTest 已足够避免被墙体推挤
 
 	// 角色不直接使用控制器旋转，旋转交给 Movement 根据速度方向处理
 	bUseControllerRotationYaw = false;
@@ -32,7 +30,7 @@ APlayerCharacter::APlayerCharacter()
 
 	// 让 CharacterMovement 朝着移动方向自动旋转角色
 	UCharacterMovementComponent* MoveComp = GetCharacterMovement();
-	MoveComp->bOrientRotationToMovement = true;      // 朝移动方向转身
+	MoveComp->bOrientRotationToMovement = false;      // 朝移动方向转身
 	MoveComp->RotationRate = FRotator(0.f, 540.f, 0.f); // 转身速度
 	MoveComp->MaxWalkSpeed = 500.f;
 }
@@ -54,10 +52,10 @@ void APlayerCharacter::BeginPlay()
 			CurrentGun = SpawnedGun;
 			CurrentGun->InitializeOwner(this);
 
-			// 将枪附加到角色 Mesh 上的武器插槽（需在 SkeletalMesh 上预先创建名为 "WeaponSocket" 的 Socket）
+			// 将枪附加到角色 Mesh 上的武器插槽（需在 SkeletalMesh 上预先创建名为 "Gun" 的 Socket）
 			if (USkeletalMeshComponent* MeshComp = GetMesh())
 			{
-				CurrentGun->AttachToComponent(MeshComp, FAttachmentTransformRules::SnapToTargetNotIncludingScale, TEXT("WeaponSocket"));
+				CurrentGun->AttachToComponent(MeshComp, FAttachmentTransformRules::SnapToTargetNotIncludingScale, TEXT("Gun"));
 			}
 		}
 	}
@@ -67,8 +65,23 @@ void APlayerCharacter::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
-	// 注意：通用运动状态（GroundSpeed、bIsInAir）已经在 ACharacterBase::Tick 中统一更新，
-	// 这里无需重复计算；如果玩家有额外的 per-frame 逻辑，可以在此处补充。
+	// 更新视角与角色朝向的偏差角度（控制器旋转相对角色旋转的差值）
+	if (Controller)
+	{
+		const FRotator ControlRot = Controller->GetControlRotation();
+		const FRotator ActorRot   = GetActorRotation();
+
+		// 计算控制器相对于角色的旋转差值，并归一化到 [-180, 180] 区间
+		const FRotator DeltaRot = (ControlRot - ActorRot).GetNormalized();
+
+		// 水平角度：视线相对角色朝向的左右偏转（Yaw 差值），限制在 [-180, 180]
+		HorizontalAngle = FMath::ClampAngle(DeltaRot.Yaw, -180.0f, 180.0f);
+
+		// 垂直角度：视线相对角色水平面的抬头/低头（Pitch 差值），同样做归一化限制
+		VerticalAngle = FMath::ClampAngle(DeltaRot.Pitch, -180.0f, 180.0f);
+	}
+
+	// 如果玩家有额外的 per-frame 逻辑，可以在此处补充。
 }
 
 void APlayerCharacter::HandleMoveInput(const FVector2D& InputAxis)
@@ -259,6 +272,7 @@ void APlayerCharacter::ToggleViewMode()
 
 		if (FollowCamera)
 		{
+			// 第一人称下，相机使用控制器旋转，角色本身不必跟随旋转
 			FollowCamera->bUsePawnControlRotation = true;
 
 			// 将相机从 SpringArm 上脱离，附着到角色 Mesh 的 "Camera" 插槽上
@@ -266,26 +280,13 @@ void APlayerCharacter::ToggleViewMode()
 			{
 				// 这里假定你已经在角色头部的骨骼上创建了名为 "Camera" 的 Socket
 				FollowCamera->AttachToComponent(MeshComp, FAttachmentTransformRules::SnapToTargetNotIncludingScale, TEXT("Camera"));
-				// 清掉相对偏移，强制使用 Socket 的位置和旋转
-				FollowCamera->SetRelativeLocation(FVector::ZeroVector);
-				FollowCamera->SetRelativeRotation(FRotator::ZeroRotator);
 			}
 		}
 
-		// 切入第一人称时，强制让角色朝向对齐到当前控制器 Yaw，避免身朝向与视角不同步
-		if (Controller)
-		{
-			const FRotator ControlRot = Controller->GetControlRotation();
-			const FRotator NewYawRot(0.f, ControlRot.Yaw, 0.f);
-			SetActorRotation(NewYawRot);
-		}
-
-		// 第一人称：角色旋转由控制器控制，不再根据移动方向自动转身
-		bUseControllerRotationYaw = true;
-		if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
-		{
-			MoveComp->bOrientRotationToMovement = false;
-		}
+		// 你当前不希望第一人称时角色跟着控制器转向：
+		// - 不再将 ActorRotation 强制对齐控制器 Yaw
+		// - 保持角色旋转由移动方向驱动（与第三人称一致）
+		bUseControllerRotationYaw = false;
 	}
 	else
 	{
@@ -303,15 +304,9 @@ void APlayerCharacter::ToggleViewMode()
 
 			// 将相机重新附着回 SpringArm 末端，由 SpringArm 控制第三人称位置
 			FollowCamera->AttachToComponent(CameraBoom, FAttachmentTransformRules::SnapToTargetNotIncludingScale, USpringArmComponent::SocketName);
-			FollowCamera->SetRelativeLocation(FVector::ZeroVector);
-			FollowCamera->SetRelativeRotation(FRotator::ZeroRotator);
 		}
 
 		// 第三人称：角色朝移动方向自动旋转，控制器只负责摄像机
 		bUseControllerRotationYaw = false;
-		if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
-		{
-			MoveComp->bOrientRotationToMovement = true;
-		}
 	}
 }
